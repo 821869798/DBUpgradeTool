@@ -1,8 +1,8 @@
+# -*- coding: utf-8 -*-
 import pymysql
 import json
 import copy
 import re
-
 
 class MysqlUpgradeTool:
 
@@ -59,22 +59,15 @@ class MysqlUpgradeTool:
                     cursor_tp.execute("show tables;")
                     tables = self.convert_result_to_list(cursor.fetchall())
                     tables_tp = self.convert_result_to_list(cursor_tp.fetchall())
-                    cursor_tp.execute("show create table %s" % "t_account;")
-                    print(tables, tables_tp)
                     self.create_and_del_tables(cursor, cursor_tp, tables, tables_tp)
-                    print(tables, tables_tp)
-                    # self.upgrade_all_tables(cursor, cursor_tp, tables_tp)
-
-                    # sql = "select * from %s;"
-                    # cursor.execute(sql % ("t_account",))
-                    # result = cursor.fetchall()
-                    # print(result)
+                    self.upgrade_all_tables(cursor, cursor_tp, tables_tp)
         except Exception as e:
             print(e)
             return False
         finally:
             conn.close()
             conn_tp.close()
+        print("数据库升级成功")
         return True
 
     def convert_result_to_list(self,tup):
@@ -105,8 +98,36 @@ class MysqlUpgradeTool:
                     cursor.execute("drop table if exists %s;" % table)
                     tables.remove(table)
 
+    def del_all_index(self,cursor,cursor_tp,table):
+        cursor.execute("desc %s;" % table)
+        fields = self.convert_result_to_dic(cursor.fetchall())
+        cursor_tp.execute("desc %s;" % table)
+        fields_tp = self.convert_result_to_dic(cursor_tp.fetchall())
+        cursor.execute("show index from %s" % table)
+        indexs = cursor.fetchall()
+        cursor_tp.execute("show index from %s" % table)
+        indexs_tp = cursor_tp.fetchall()
+        for index in indexs:
+            if index[2] == "PRIMARY":
+                if index[4] not in fields_tp or fields_tp[index[4]][3] != "PRI":
+                    fields[index[4]] = list(fields[index[4]])
+                    fields[index[4]][3] = ''
+                    fields[index[4]][5] = ''
+                    self.create_modify_field(cursor,'modify',table,fields[index[4]])
+                    cursor.execute("alter table %s drop primary key" % table)
+            else:
+                cursor.execute("alter table %s drop index %s" %(table,index[2]))
 
-    def create_one_field(self,cursor, field):
+        for index in indexs_tp:
+            if index[2] != "PRIMARY" and index[4] in fields:
+                if str(index[1]) == '1':
+                    cursor.execute("alter table %s add index %s(%s)"%(table,index[2],index[4]))
+                else:
+                    cursor.execute("alter table %s add unique %s(%s)"%(table,index[2],index[4]))
+
+    def create_modify_field(self,cursor,op,table,field,old_field=[]):
+        if op not in ('add','modify'):
+            return
         if field[2] == 'NO':
             field[2] = 'not null'
         else:
@@ -116,34 +137,37 @@ class MysqlUpgradeTool:
         else:
             field[4] = "default '%s'" % field[4]
         if field[3] == 'UNI':
-            field[3] == 'unique key'
+            if op == 'add':
+                field[3] = 'unique key'
+            else:
+                field[3] = ''
         elif field[3] == 'PRI':
-            field[3] == 'primary key'
+            if op == 'add' or old_field[3] != 'PRI':
+                field[3] = 'primary key'
+            else:
+                field[3] = ''
         else:
             field[3] = ''
-        sql = "alter table %s add %s %s %s %s %s;" % (
-            field[0], field[1], field[2], field[4], field[5], field[3])
+        sql = "alter table %s %s %s %s %s %s %s %s;" % (
+            table,op,field[0] , field[1], field[2], field[4], field[5], field[3])
         cursor.execute(sql)
-
-
-    def upgrade_one_field(self,cursor, cursor_tp, field):
-        pass
 
 
     def upgrade_all_tables(self,cursor, cursor_tp, tables):
         for table in tables:
+            self.del_all_index(cursor,cursor_tp,table)
             cursor_tp.execute("desc %s;" % table)
             fields_tp = cursor_tp.fetchall()
             cursor.execute("desc %s;" % table)
             fields = self.convert_result_to_dic(cursor.fetchall())
-            for a, *b in fields_tp:
-                if a not in fields:
-                    self.create_one_field(cursor, (a, *b))
-                elif (a, *b) != fields[a]:
-                    self.upgrade_one_field(cursor, cursor_tp, (a, *b))
+            for field_name, *other in fields_tp:
+                if field_name not in fields:
+                    self.create_modify_field(cursor, 'add' , table,[field_name, *other])
+                elif (field_name, *other) != fields[field_name]:
+                    self.create_modify_field(cursor, 'modify', table,[field_name, *other],fields[field_name])
 
             if self.del_other_fields:
-                fields_tp = self.convert_result_to_dic(fields_tp)
+                fields_tp =  self.convert_result_to_dic(fields_tp)
                 for key in fields:
                     if key not in fields_tp:
                         sql = "alter table %s drop %s" % (table, key)

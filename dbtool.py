@@ -150,7 +150,6 @@ try:
             cursor_tp.execute("show tables;")
             tables = convert_result_to_list(cursor.fetchall())
             tables_tp = convert_result_to_list(cursor_tp.fetchall())
-            cursor_tp.execute("show create table %s" % "t_account;")
             create_and_del_tables(cursor, cursor_tp, tables, tables_tp)
             upgrade_all_tables(cursor, cursor_tp, tables_tp)
 except Exception as e:
